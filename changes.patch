@@ -1,0 +1,454 @@
+diff --git a/database/schema.sql b/database/schema.sql
+index e46bf9a..c526d11 100644
+--- a/database/schema.sql
++++ b/database/schema.sql
+@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS users (
+     name VARCHAR(100) NOT NULL,
+     email VARCHAR(100) UNIQUE NOT NULL,
+     password_hash VARCHAR(255) NOT NULL,
+     role_id INT REFERENCES roles(id) ON DELETE RESTRICT,
++    failed_login_attempts INT DEFAULT 0,
++    locked_until TIMESTAMP,
+     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+ );
+ 
+diff --git a/database/seed.sql b/database/seed.sql
+index c6b92a2..fa43e01 100644
+--- a/database/seed.sql
++++ b/database/seed.sql
+@@ -3,7 +3,7 @@ INSERT INTO roles (id, name) VALUES 
+ (1, 'Admin'),
+ (2, 'Dispatcher'),
+-(3, 'Fleet Manager'),
++(3, 'Manager'),
+ (4, 'Safety Officer'),
+ (5, 'Financial Analyst')
+ ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;
+diff --git a/authentication/routes/auth.js b/authentication/routes/auth.js
+index f10b82e..d99e03c 100644
+--- a/authentication/routes/auth.js
++++ b/authentication/routes/auth.js
+@@ -13,45 +13,51 @@
+  * @desc Register a new user
+  */
+ router.post('/register', async (req, res) => {
+-  const { name, email, password, roleName } = req.body;
+-
+-  // Validation
++  const { name, email, password, role } = req.body;
++
++  // 1. Name validation
+   if (!name || name.trim() === '') {
+-    return res.status(400).json({ error: 'Please enter your name.' });
+-  }
+-
+-  if (!email || !emailRegex.test(email)) {
+-    return res.status(400).json({ error: 'Please enter a valid email address.' });
+-  }
+-
+-  if (!password || password.length < 6) {
+-    return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+-  }
+-
+-  const role = roleName || 'Dispatcher'; // Default role if not provided
+-
+-  try {
+-    // Check if role exists
++    return res.status(400).json({ field: 'name', error: 'Please enter your name', message: 'Please enter your name' });
++  }
++
++  // 2. Email format validation
++  if (!email || !emailRegex.test(email)) {
++    return res.status(400).json({ field: 'email', error: 'Please enter a valid email address', message: 'Please enter a valid email address' });
++  }
++
++  // 3. Password length validation (min 8 characters)
++  if (!password || password.length < 8) {
++    return res.status(400).json({ field: 'password', error: 'Password must be at least 8 characters', message: 'Password must be at least 8 characters' });
++  }
++
++  // 4. Role validation
++  const validRoles = ['Admin', 'Dispatcher', 'Manager', 'Financial Analyst'];
++  if (!role || !validRoles.includes(role)) {
++    return res.status(400).json({ field: 'role', error: 'Please select a role', message: 'Please select a role' });
++  }
++
++  try {
++    // 5. Look up the corresponding role_id from the roles table
+     const roleRes = await db.query('SELECT id FROM roles WHERE name = $1', [role]);
+     if (roleRes.rows.length === 0) {
+-      return res.status(400).json({ error: `The selected role '${role}' is invalid.` });
++      return res.status(400).json({ field: 'role', error: 'The selected role is invalid.', message: 'The selected role is invalid.' });
+     }
+     const roleId = roleRes.rows[0].id;
+ 
+-    // Check if email already exists
++    // 6. Check if email already exists
+     const userExists = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+     if (userExists.rows.length > 0) {
+-      return res.status(400).json({ error: 'An account with this email address already exists.' });
+-    }
+-
+-    // Hash password and save
++      return res.status(400).json({ field: 'email', error: 'An account with this email already exists', message: 'An account with this email already exists' });
++    }
++
++    // 7. Hash password and save with initialized attempts
+     const passwordHash = await hashPassword(password);
+     const newUser = await db.query(
+-      'INSERT INTO users (name, email, password_hash, role_id) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role_id',
++      'INSERT INTO users (name, email, password_hash, role_id, failed_login_attempts, locked_until) VALUES ($1, $2, $3, $4, 0, NULL) RETURNING id, name, email, role_id',
+       [name, email, passwordHash, roleId]
+     );
+ 
+-    // Generate token
++    // 8. Generate token for auto-login
+     const token = generateToken({
+       id: newUser.rows[0].id,
+       name: newUser.rows[0].name,
+@@ -82,9 +88,27 @@ router.post('/login', async (req, res) => {
+   const { email, password, role } = req.body;
+ 
+   try {
+     // Find user
+-    const userRes = await db.query('SELECT * FROM users WHERE email = $1', [email]);
++    const userRes = await db.query(
++      'SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.email = $1',
++      [email]
++    );
+     if (userRes.rows.length === 0) {
+-      return res.status(401).json({ error: 'Invalid email or password.' });
++      return res.status(401).json({ error: 'Invalid credentials. User does not exist.' });
+     }
++    const user = userRes.rows[0];
++
++    // Check temporary lockout
++    if (user.locked_until && new Date(user.locked_until) > new Date()) {
++      return res.status(403).json({
++        error: 'Account locked due to too many failed attempts.',
++        message: `Account locked due to too many failed attempts. Try again after ${new Date(user.locked_until).toLocaleTimeString()}.`,
++        lockedUntil: user.locked_until
++      });
++    }
++
++    // Check role mapping
++    const mappedRole = role === 'Manager' ? 'Fleet Manager' : role;
++    if (user.role_name !== mappedRole && user.role_name !== role) {
++      await db.query('UPDATE users SET failed_login_attempts = failed_login_attempts + 1 WHERE id = $1', [user.id]);
++      
++      // Check if 5th attempt
++      if (user.failed_login_attempts + 1 >= 5) {
++        const lockTime = new Date(Date.now() + 15 * 60 * 1000);
++        await db.query('UPDATE users SET locked_until = $1, failed_login_attempts = 0 WHERE id = $2', [lockTime, user.id]);
++        return res.status(403).json({
++          error: 'Account locked due to too many failed attempts.',
++          message: `Account locked due to too many failed attempts. Try again after ${lockTime.toLocaleTimeString()}.`,
++          lockedUntil: lockTime
++        });
++      }
++
++      return res.status(400).json({ field: 'role', message: 'You do not have access with the selected role' });
++    }
++
++    // Validate password
++    const isMatch = await comparePassword(password, user.password_hash);
++    if (!isMatch) {
++      await db.query('UPDATE users SET failed_login_attempts = failed_login_attempts + 1 WHERE id = $1', [user.id]);
++      
++      if (user.failed_login_attempts + 1 >= 5) {
++        const lockTime = new Date(Date.now() + 15 * 60 * 1000);
++        await db.query('UPDATE users SET locked_until = $1, failed_login_attempts = 0 WHERE id = $2', [lockTime, user.id]);
++        return res.status(403).json({
++          error: 'Account locked due to too many failed attempts.',
++          message: `Account locked due to too many failed attempts. Try again after ${lockTime.toLocaleTimeString()}.`,
++          lockedUntil: lockTime
++        });
++      }
++
++      return res.status(401).json({ error: 'Invalid credentials.' });
++    }
++
++    // Reset failed login attempts on successful login
++    await db.query('UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1', [user.id]);
+ 
+diff --git a/backend/routes/vehicles.js b/backend/routes/vehicles.js
+index b82de90..c312781 100644
+--- a/backend/routes/vehicles.js
++++ b/backend/routes/vehicles.js
+@@ -16,5 +16,5 @@
+-// Create new vehicle - Admin & Manager & Fleet Manager
+-router.post('/', verifyToken, requireRole(['Admin', 'Manager', 'Fleet Manager']), vehiclesController.createVehicle);
++// Create new vehicle - Admin & Manager
++router.post('/', verifyToken, requireRole(['Admin', 'Manager']), vehiclesController.createVehicle);
+ 
+-// Update vehicle - Admin & Manager & Fleet Manager
+-router.put('/:id', verifyToken, requireRole(['Admin', 'Manager', 'Fleet Manager']), vehiclesController.updateVehicle);
++// Update vehicle - Admin & Manager
++router.put('/:id', verifyToken, requireRole(['Admin', 'Manager']), vehiclesController.updateVehicle);
+diff --git a/backend/routes/drivers.js b/backend/routes/drivers.js
+index b49ea4e..e32d1e9 100644
+--- a/backend/routes/drivers.js
++++ b/backend/routes/drivers.js
+@@ -16,5 +16,5 @@
+-// Create new driver - Admin, Manager, Fleet Manager, Safety Officer
+-router.post('/', verifyToken, requireRole(['Admin', 'Manager', 'Fleet Manager', 'Safety Officer']), driversController.createDriver);
++// Create new driver - Admin, Manager
++router.post('/', verifyToken, requireRole(['Admin', 'Manager']), driversController.createDriver);
+ 
+-// Update driver - Admin, Manager, Fleet Manager, Safety Officer
+-router.put('/:id', verifyToken, requireRole(['Admin', 'Manager', 'Fleet Manager', 'Safety Officer']), driversController.updateDriver);
++// Update driver - Admin, Manager
++router.put('/:id', verifyToken, requireRole(['Admin', 'Manager']), driversController.updateDriver);
+diff --git a/backend/routes/trips.js b/backend/routes/trips.js
+index 923d8c1..f4e3c11 100644
+--- a/backend/routes/trips.js
++++ b/backend/routes/trips.js
+@@ -13,11 +13,11 @@
+-// Dispatch a new trip - Admin, Dispatcher, and Driver/Dispatcher
+-router.post('/', verifyToken, requireRole(['Admin', 'Dispatcher', 'Driver/Dispatcher']), tripsController.dispatchTrip);
++// Dispatch a new trip - Admin, Dispatcher
++router.post('/', verifyToken, requireRole(['Admin', 'Dispatcher']), tripsController.dispatchTrip);
+ 
+-// Complete a trip - Admin, Dispatcher, and Driver/Dispatcher
+-router.post('/:id/complete', verifyToken, requireRole(['Admin', 'Dispatcher', 'Driver/Dispatcher']), tripsController.completeTrip);
++// Complete a trip - Admin, Dispatcher
++router.post('/:id/complete', verifyToken, requireRole(['Admin', 'Dispatcher']), tripsController.completeTrip);
+ 
+-// Cancel a trip - Admin, Dispatcher, and Driver/Dispatcher
+-router.post('/:id/cancel', verifyToken, requireRole(['Admin', 'Dispatcher', 'Driver/Dispatcher']), tripsController.cancelTrip);
++// Cancel a trip - Admin, Dispatcher
++router.post('/:id/cancel', verifyToken, requireRole(['Admin', 'Dispatcher']), tripsController.cancelTrip);
+ 
+-// Dispatch a draft trip - Admin, Dispatcher, and Driver/Dispatcher
+-router.post('/:id/dispatch', verifyToken, requireRole(['Admin', 'Dispatcher', 'Driver/Dispatcher']), tripsController.dispatchDraftTrip);
++// Dispatch a draft trip - Admin, Dispatcher
++router.post('/:id/dispatch', verifyToken, requireRole(['Admin', 'Dispatcher']), tripsController.dispatchDraftTrip);
+diff --git a/backend/routes/reports.js b/backend/routes/reports.js
+index b82cf91..a28e711 100644
+--- a/backend/routes/reports.js
++++ b/backend/routes/reports.js
+@@ -7,5 +7,5 @@
+-// Get all analytics report data - Admin, Manager, Fleet Manager, Financial Analyst
+-router.get('/analytics', verifyToken, requireRole(['Admin', 'Manager', 'Fleet Manager', 'Financial Analyst']), reportsController.getReportsData);
++// Get all analytics report data - Admin, Manager, Financial Analyst
++router.get('/analytics', verifyToken, requireRole(['Admin', 'Manager', 'Financial Analyst']), reportsController.getReportsData);
+ 
+-// Export CSV report - Admin, Manager, Fleet Manager, Financial Analyst
+-router.get('/export/:reportType', verifyToken, requireRole(['Admin', 'Manager', 'Fleet Manager', 'Financial Analyst']), reportsController.exportReport);
++// Export CSV report - Admin, Manager, Financial Analyst
++router.get('/export/:reportType', verifyToken, requireRole(['Admin', 'Manager', 'Financial Analyst']), reportsController.exportReport);
+diff --git a/backend/routes/maintenance.js b/backend/routes/maintenance.js
+index f30f1e1..e88c011 100644
+--- a/backend/routes/maintenance.js
++++ b/backend/routes/maintenance.js
+@@ -10,5 +10,5 @@
+-// Log a maintenance ticket - Admin, Dispatcher, Manager
+-router.post('/', verifyToken, requireRole(['Admin', 'Dispatcher', 'Manager']), maintenanceController.createMaintenanceLog);
++// Log a maintenance ticket - Admin, Manager
++router.post('/', verifyToken, requireRole(['Admin', 'Manager']), maintenanceController.createMaintenanceLog);
+ 
+-// Close/Complete a maintenance ticket - Admin, Dispatcher, Manager
+-router.post('/:id/complete', verifyToken, requireRole(['Admin', 'Dispatcher', 'Manager']), maintenanceController.closeMaintenanceLog);
++// Close/Complete a maintenance ticket - Admin, Manager
++router.post('/:id/complete', verifyToken, requireRole(['Admin', 'Manager']), maintenanceController.closeMaintenanceLog);
+diff --git a/frontend/src/api/auth.ts b/frontend/src/api/auth.ts
+index e8b3211..a67b211 100644
+--- a/frontend/src/api/auth.ts
++++ b/frontend/src/api/auth.ts
+@@ -11,2 +11,2 @@
+-export const registerUser = async (userData: { name: string; email: string; password?: string; roleName?: string }) => {
++export const registerUser = async (userData: { name: string; email: string; password?: string; role?: string }) => {
+   return apiRequest('/register', {
+diff --git a/frontend/src/api/client.ts b/frontend/src/api/client.ts
+index a8c6211..d98cf11 100644
+--- a/frontend/src/api/client.ts
++++ b/frontend/src/api/client.ts
+@@ -18,7 +18,12 @@ export const apiRequest = async (
+     if (!response.ok) {
+       let errorData;
+       try {
+         errorData = await response.json();
+       } catch (e) {
+         throw new Error(`API Error: ${response.status} ${response.statusText}`);
+       }
+-      throw new Error(errorData?.error || `API Error: ${response.status}`);
++      const customError = new Error(errorData?.message || errorData?.error || `API Error: ${response.status}`) as any;
++      if (errorData) {
++        Object.assign(customError, errorData);
++      }
++      throw customError;
+     }
+diff --git a/frontend/src/context/AuthContext.tsx b/frontend/src/context/AuthContext.tsx
+index b8cde11..c6b8f11 100644
+--- a/frontend/src/context/AuthContext.tsx
++++ b/frontend/src/context/AuthContext.tsx
+@@ -15,2 +15,2 @@ export interface AuthContextType {
+-  register: (name: string, email: string, password: string, roleName: string) => Promise<void>;
++  register: (name: string, email: string, password: string, role: string) => Promise<void>;
+@@ -64,3 +64,3 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
+-  const register = async (name: string, email: string, password: string, roleName: string) => {
++  const register = async (name: string, email: string, password: string, role: string) => {
+     setLoading(true);
+     try {
+-      const response = await registerUser({ name, email, password, roleName });
++      const response = await registerUser({ name, email, password, role });
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index c521c11..a89c311 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -7,2 +7,3 @@
+ import Login from './pages/Login';
++import SignUp from './pages/SignUp';
+@@ -67,3 +67,4 @@ const App: React.FC = () => {
+           <Routes>
+             <Route path="/login" element={<Login />} />
++            <Route path="/signup" element={<SignUp />} />
+             <Route path="/*" element={<ProtectedLayout />} />
+diff --git a/frontend/src/components/Sidebar.tsx b/frontend/src/components/Sidebar.tsx
+index d8f1a11..c92a111 100644
+--- a/frontend/src/components/Sidebar.tsx
++++ b/frontend/src/components/Sidebar.tsx
+@@ -35,27 +35,27 @@ export const Sidebar: React.FC = () => {
+-      roles: ['Admin', 'Dispatcher', 'Manager'],
++      roles: ['Admin', 'Dispatcher', 'Manager', 'Financial Analyst'],
+     },
+     {
+       label: 'Vehicles',
+       path: '/vehicles',
+       icon: Truck,
+-      roles: ['Admin', 'Dispatcher', 'Manager'],
++      roles: ['Admin', 'Dispatcher', 'Manager', 'Financial Analyst'],
+     },
+     {
+       label: 'Drivers',
+       path: '/drivers',
+       icon: Users,
+       roles: ['Admin', 'Dispatcher', 'Manager'],
+     },
+     {
+       label: 'Trip Dispatcher',
+       path: '/dispatch',
+       icon: Navigation,
+-      roles: ['Admin', 'Dispatcher', 'Manager'],
++      roles: ['Admin', 'Dispatcher'],
+     },
+     {
+       label: 'Maintenance',
+       path: '/maintenance',
+       icon: Wrench,
+-      roles: ['Admin', 'Dispatcher', 'Manager'],
++      roles: ['Admin', 'Manager'],
+     },
+     {
+       label: 'Fuel & Expenses',
+       path: '/expenses',
+       icon: Fuel,
+-      roles: ['Admin', 'Dispatcher', 'Manager'],
++      roles: ['Admin', 'Financial Analyst'],
+     },
+     {
+       label: 'Reports & Analytics',
+       path: '/reports',
+       icon: BarChart3,
+-      roles: ['Admin', 'Manager'], // Reports restricted to Admin/Manager
++      roles: ['Admin', 'Manager', 'Financial Analyst'],
+     },
+     {
+       label: 'Settings & RBAC',
+       path: '/settings',
+       icon: Settings,
+-      roles: ['Admin'], // Settings restricted to Admin only
++      roles: ['Admin'],
+     },
+diff --git a/frontend/src/pages/Login.tsx b/frontend/src/pages/Login.tsx
+index c52f211..d68f111 100644
+--- a/frontend/src/pages/Login.tsx
++++ b/frontend/src/pages/Login.tsx
+@@ -1,5 +1,5 @@
+ import React, { useState, useEffect } from 'react';
+-import { useNavigate } from 'react-router-dom';
++import { useNavigate, Link } from 'react-router-dom';
+ import { useAuth } from '../context/AuthContext';
+ import { ShieldCheck, ShieldAlert, ArrowRight, Loader2 } from 'lucide-react';
+ import { useToast } from '../context/ToastContext';
+@@ -314,6 +314,16 @@
+               )}
+             </button>
+           </form>
++
++          {/* Redirection Link */}
++          <div className="text-center pt-2">
++            <p className="text-xs text-gray-500 font-semibold">
++              Don't have an account?{' '}
++              <Link to="/signup" className="text-brand-amber hover:underline font-bold">
++                Sign Up
++              </Link>
++            </p>
++          </div>
+         </div>
+       </div>
+diff --git a/frontend/src/pages/Settings.tsx b/frontend/src/pages/Settings.tsx
+index a9cf211..d8cf311 100644
+--- a/frontend/src/pages/Settings.tsx
++++ b/frontend/src/pages/Settings.tsx
+@@ -53,12 +53,12 @@ export const Settings: React.FC = () => {
+-    { permission: 'Register & Edit Fleet Vehicles', admin: true, manager: true, dispatcher: false },
+-    { permission: 'Delete Fleet Vehicles', admin: true, manager: false, dispatcher: false },
+-    { permission: 'Manage Operators / Drivers', admin: true, manager: true, dispatcher: false },
+-    { permission: 'Dispatch Cargo Trips', admin: true, manager: false, dispatcher: true },
+-    { permission: 'Complete & Cancel Trips', admin: true, manager: false, dispatcher: true },
+-    { permission: 'Log Service/Maintenance tickets', admin: true, manager: true, dispatcher: true },
+-    { permission: 'Complete Maintenance tickets', admin: true, manager: true, dispatcher: true },
+-    { permission: 'Log Fuel Purchases & Expenses', admin: true, manager: true, dispatcher: true },
+-    { permission: 'View Reports & Business Analytics', admin: true, manager: true, dispatcher: false },
+-    { permission: 'Configure RBAC System Settings', admin: true, manager: false, dispatcher: false },
++    { permission: 'Register & Edit Fleet Vehicles', admin: true, manager: true, dispatcher: false, analyst: false },
++    { permission: 'Delete Fleet Vehicles', admin: true, manager: false, dispatcher: false, analyst: false },
++    { permission: 'Manage Operators / Drivers', admin: true, manager: true, dispatcher: false, analyst: false },
++    { permission: 'Dispatch Cargo Trips', admin: true, manager: false, dispatcher: true, analyst: false },
++    { permission: 'Complete & Cancel Trips', admin: true, manager: false, dispatcher: true, analyst: false },
++    { permission: 'Log Service/Maintenance tickets', admin: true, manager: true, dispatcher: false, analyst: false },
++    { permission: 'Complete Maintenance tickets', admin: true, manager: true, dispatcher: false, analyst: false },
++    { permission: 'Log Fuel Purchases & Expenses', admin: true, manager: false, dispatcher: false, analyst: true },
++    { permission: 'View Reports & Business Analytics', admin: true, manager: true, dispatcher: false, analyst: true },
++    { permission: 'Configure RBAC System Settings', admin: true, manager: false, dispatcher: false, analyst: false },
+   ];
+@@ -104,3 +104,4 @@ export const Settings: React.FC = () => {
+               <option value={1}>Admin</option>
+               <option value={2}>Dispatcher</option>
+               <option value={3}>Manager</option>
++              <option value={5}>Financial Analyst</option>
+             </select>
+@@ -158,5 +159,5 @@ export const Settings: React.FC = () => {
+-            <div className="grid grid-cols-5 text-[9px] uppercase font-bold text-gray-500 pb-2 border-b border-gray-800">
++            <div className="grid grid-cols-6 text-[9px] uppercase font-bold text-gray-500 pb-2 border-b border-gray-800">
+               <span className="col-span-2">Module Action</span>
+               <span className="text-center">ADM</span>
+               <span className="text-center">MGR</span>
+               <span className="text-center">DIS</span>
++              <span className="text-center">FIN</span>
+             </div>
+@@ -168,5 +170,14 @@ export const Settings: React.FC = () => {
+               {permissionsMatrix.map((item, idx) => (
+-                <div key={idx} className="grid grid-cols-5 items-center text-xs font-semibold text-gray-300">
++                <div key={idx} className="grid grid-cols-6 items-center text-xs font-semibold text-gray-300">
+                   <span className="col-span-2 text-gray-400 leading-tight">{item.permission}</span>
++                  ...
++                  {/* Dispatcher Check */}
++                  <span className="flex justify-center">
++                    {item.dispatcher ? (
++                      <Check size={14} className="text-brand-teal" />
++                    ) : (
++                      <X size={14} className="text-rose-500" />
++                    )}
++                  </span>
++                  {/* Analyst Check */}
++                  <span className="flex justify-center">
++                    {item.analyst ? (
++                      <Check size={14} className="text-brand-teal" />
++                    ) : (
++                      <X size={14} className="text-rose-500" />
++                    )}
++                  </span>
+                 </div>
+               ))}
