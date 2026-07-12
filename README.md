@@ -1,114 +1,32 @@
- TransitOps – Smart Transport Operations Platform
+# React + TypeScript + Vite
 
-A smart logistics and fleet management platform developed for the **Odoo Hackathon 2026**. TransitOps helps organizations efficiently manage vehicles, drivers, trips, maintenance, fuel consumption, and operational expenses through a modern dashboard.
+This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
-Features
+Currently, two official plugins are available:
 
--  JWT Authentication & Role-Based Access Control (RBAC)
--  Vehicle Management
--  Driver Management
--  Trip Management
--  Maintenance Tracking
--  Fuel Log Management
--  Expense Management
--  Interactive Dashboard & Reports
--  Search, Filters & Pagination
--  Responsive UI
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
 
----
+## React Compiler
 
-## Tech Stack
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-### Frontend
-- React
-- TypeScript
-- Tailwind CSS
-- Ant Design
+## Expanding the Oxlint configuration
 
-### Backend
-- Django
-- Django REST Framework
+If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
 
-### Database
-- MySQL
-
-### Authentication
-- JWT Authentication
-
-### Version Control
-- Git & GitHub
-
----
-
-## 📂 Project Structure
-
-```text
-TransitOps/
-├── frontend/
-├── backend/
-├── database/
-├── docs/
-└── README.md
+```json
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "oxc"],
+  "options": {
+    "typeAware": true
+  },
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }]
+  }
+}
 ```
 
----
-
-##  Installation
-
-### Clone the Repository
-
-```bash
-git clone <repository-url>
-cd TransitOps
-```
-
-### Backend
-
-```bash
-cd backend
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py runserver
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-### Database
-
-- Install MySQL
-- Create the database
-- Import the provided SQL schema
-- Update the `.env` file with your database credentials
-
----
-
-##  Team Members
-
-| Name | Responsibility |
-|------|----------------|
-| Member 1 | Frontend Development |
-| Member 2 | Backend Development |
-| Member 3 | Database Design |
-| Member 4 | Authentication & Integration |
-
----
-
-##  Future Enhancements
-
-- Live GPS Tracking
-- Route Optimization
-- Email & SMS Notifications
-- Predictive Maintenance
-- AI-based Analytics
-
----
-
-##  License
-
-Developed exclusively for **Odoo Hackathon 2026**.
+See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
