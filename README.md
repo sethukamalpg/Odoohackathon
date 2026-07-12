@@ -1,23 +1,23 @@
-#🚛 TransitOps – Smart Transport Operations Platform
+ TransitOps – Smart Transport Operations Platform
 
 A smart logistics and fleet management platform developed for the **Odoo Hackathon 2026**. TransitOps helps organizations efficiently manage vehicles, drivers, trips, maintenance, fuel consumption, and operational expenses through a modern dashboard.
 
-## 📌 Features
+Features
 
-- 🔐 JWT Authentication & Role-Based Access Control (RBAC)
-- 🚚 Vehicle Management
-- 👨‍✈️ Driver Management
-- 🛣️ Trip Management
-- 🛠️ Maintenance Tracking
-- ⛽ Fuel Log Management
-- 💰 Expense Management
-- 📊 Interactive Dashboard & Reports
-- 🔍 Search, Filters & Pagination
-- 📱 Responsive UI
+-  JWT Authentication & Role-Based Access Control (RBAC)
+-  Vehicle Management
+-  Driver Management
+-  Trip Management
+-  Maintenance Tracking
+-  Fuel Log Management
+-  Expense Management
+-  Interactive Dashboard & Reports
+-  Search, Filters & Pagination
+-  Responsive UI
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 ### Frontend
 - React
@@ -53,7 +53,7 @@ TransitOps/
 
 ---
 
-## 🚀 Installation
+##  Installation
 
 ### Clone the Repository
 
@@ -88,7 +88,7 @@ npm run dev
 
 ---
 
-## 👥 Team Members
+##  Team Members
 
 | Name | Responsibility |
 |------|----------------|
@@ -99,7 +99,7 @@ npm run dev
 
 ---
 
-## 🎯 Future Enhancements
+##  Future Enhancements
 
 - Live GPS Tracking
 - Route Optimization
@@ -109,6 +109,6 @@ npm run dev
 
 ---
 
-## 📄 License
+##  License
 
 Developed exclusively for **Odoo Hackathon 2026**.
